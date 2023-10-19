@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import yaml
 
 
 class DateEncoding(nn.Module):
@@ -76,14 +77,132 @@ class Encoder(nn.Module):
         )
 
     def forward(self, src, dates, keyMsk=None):
-        src, seqs = self.dateEncoding(src, dates), src.shape[1]
-        result = self.txEncoder(src, src_key_padding_mask=keyMsk)
+        src, srcMsk = self.dateEncoding(src, dates), self.create_causal_mask(
+            src.shape[1]
+        )
+        result = self.txEncoder(src, srcMsk, keyMsk, True)
         assert not torch.isnan(result).any()
         return result
 
+    def create_causal_mask(self, nseq):
+        mask = torch.triu(torch.ones(nseq, nseq), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(
+            mask == 0, float(0.0)
+        )
+        return mask
 
-_device, _dtype = torch.device("cpu"), torch.float32
-encoder = Encoder(4, 4, 4, 64, 0.1, _device, _dtype)
+
+class Decoder(nn.Module):
+    def __init__(
+        self,
+        nlayer,
+        d_model,
+        nhead,
+        dim_feedforward,
+        dropout,
+        device: torch.device,
+        dtype=torch.float16,
+    ):
+        super(Decoder, self).__init__()
+
+        self.d_model, self.device, self.dtype = d_model, device, dtype
+        self.dateEncoding = DateEncoding(self.d_model, self.device, self.dtype)
+
+        self.nlayer, self.nhead, self.dim_feedforward, self.dropout = (
+            nlayer,
+            nhead,
+            dim_feedforward,
+            dropout,
+        )
+        self.decoderLayer = nn.TransformerDecoderLayer(
+            self.d_model,
+            self.nhead,
+            self.dim_feedforward,
+            self.dropout,
+            "relu",
+            batch_first=True,
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        self.txDecoder = nn.TransformerDecoder(self.decoderLayer, self.nlayer)
+
+    def forward(self, tgt, memory, dates, tgt_mask=None, memory_mask=None):
+        tgt = self.dateEncoding(tgt, dates)
+        if tgt_mask is None:
+            tgt_mask = self.create_causal_mask(tgt.shape[1])
+
+        result = self.txDecoder(
+            tgt, memory, tgt_mask=tgt_mask, memory_key_padding_mask=memory_mask
+        )
+        assert not torch.isnan(result).any()
+        return result
+
+    def create_causal_mask(self, nseq):
+        mask = torch.triu(torch.ones(nseq, nseq), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(
+            mask == 0, float(0.0)
+        )
+        return mask
+
+
+class SpaceTx(nn.Module):
+    def __init__(
+        self,
+        pth,
+        encoderCfg=None,
+        decoderCfg=None,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    ):
+        super(SpaceTx, self).__init__()
+
+        self.device, self.dtype = device, dtype
+        self.encoder, self.decoder = Cfg2Encoder(
+            encoderCfg, pth, device, dtype
+        ), Cfg2Decoder(decoderCfg, pth, device, dtype)
+
+    def forward(self, src, srcDates, msk, tgtDates):
+        src = self.encoder(src, srcDates, msk)
+        tgt = torch.zeros_like(src, dtype=self.dtype)
+        tgt[:, 0] += src[:, -1]
+        
+
+
+def Cfg2Encoder(cfg=None, pth=None, device=torch.device("cpu"), dtype=torch.float32):
+    if pth:
+        with open(pth) as f:
+            yml = yaml.load(f, Loader=yaml.FullLoader)
+            cfg = yml["encoder"]
+    return Encoder(
+        cfg["nlayer"],
+        cfg["d_model"],
+        cfg["nhead"],
+        cfg["dim_feedforward"],
+        cfg["dropout"],
+        device,
+        dtype,
+    )
+
+
+def Cfg2Decoder(cfg=None, pth=None, device=torch.device("cpu"), dtype=torch.float32):
+    if pth:
+        with open(pth) as f:
+            yml = yaml.load(f, Loader=yaml.FullLoader)
+            cfg = yml["decoder"]
+    return Decoder(
+        cfg["nlayer"],
+        cfg["d_model"],
+        cfg["nhead"],
+        cfg["dim_feedforward"],
+        cfg["dropout"],
+        device,
+        dtype,
+    )
+
+
+_device, _dtype, _cfg = torch.device("cpu"), torch.float32, "./cfg.yml"
+spaceTx = SpaceTx(_cfg)
 _src = torch.randn((5, 60, 4), dtype=_dtype, device=_device)
 _month, _day, _msk = (
     torch.randint(0, 12, size=(5, 60)),
@@ -91,5 +210,5 @@ _month, _day, _msk = (
     torch.randint(0, 2, (5, 60)).bool(),
 )
 _date = torch.stack((_month, _day), 2)
-result = encoder(_src, _date, _msk)
-print(result)
+spaceTx(_src, _date, _msk, _date)
+print(1)

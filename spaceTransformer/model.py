@@ -77,19 +77,10 @@ class Encoder(nn.Module):
         )
 
     def forward(self, src, dates, keyMsk=None):
-        src, srcMsk = self.dateEncoding(src, dates), self.create_causal_mask(
-            src.shape[1]
-        )
+        src, srcMsk = self.dateEncoding(src, dates), create_causal_mask(src.shape[1])
         result = self.txEncoder(src, srcMsk, keyMsk, True)
         assert not torch.isnan(result).any()
         return result
-
-    def create_causal_mask(self, nseq):
-        mask = torch.triu(torch.ones(nseq, nseq), diagonal=1)
-        mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(
-            mask == 0, float(0.0)
-        )
-        return mask
 
 
 class Decoder(nn.Module):
@@ -127,23 +118,23 @@ class Decoder(nn.Module):
 
         self.txDecoder = nn.TransformerDecoder(self.decoderLayer, self.nlayer)
 
-    def forward(self, tgt, memory, dates, tgt_mask=None, memory_mask=None):
+    def forward(self, tgt, src, dates, tgtKeyMsk=None, srcKeyMsk=None):
         tgt = self.dateEncoding(tgt, dates)
-        if tgt_mask is None:
-            tgt_mask = self.create_causal_mask(tgt.shape[1])
+        srcMsk, tgtMsk = create_causal_mask(src.shape[1]), create_causal_mask(
+            tgt.shape[1]
+        )
 
         result = self.txDecoder(
-            tgt, memory, tgt_mask=tgt_mask, memory_key_padding_mask=memory_mask
+            tgt, src, tgtMsk, srcMsk, tgtKeyMsk, srcKeyMsk, True, True
         )
         assert not torch.isnan(result).any()
         return result
 
-    def create_causal_mask(self, nseq):
-        mask = torch.triu(torch.ones(nseq, nseq), diagonal=1)
-        mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(
-            mask == 0, float(0.0)
-        )
-        return mask
+
+def create_causal_mask(nseq):
+    mask = torch.triu(torch.ones(nseq, nseq), diagonal=1)
+    mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(mask == 0, float(0.0))
+    return mask
 
 
 class SpaceTx(nn.Module):
@@ -162,11 +153,12 @@ class SpaceTx(nn.Module):
             encoderCfg, pth, device, dtype
         ), Cfg2Decoder(decoderCfg, pth, device, dtype)
 
-    def forward(self, src, srcDates, msk, tgtDates):
-        src = self.encoder(src, srcDates, msk)
+    def forward(self, src, srcDates, srcMsk, tgtDates, tgtMsk):
+        src = self.encoder(src, srcDates, srcMsk)
         tgt = torch.zeros_like(src, dtype=self.dtype)
         tgt[:, 0] += src[:, -1]
-        
+        result = self.decoder(tgt, src, tgtDates, tgtMsk, srcMsk)
+        return result
 
 
 def Cfg2Encoder(cfg=None, pth=None, device=torch.device("cpu"), dtype=torch.float32):
@@ -204,11 +196,21 @@ def Cfg2Decoder(cfg=None, pth=None, device=torch.device("cpu"), dtype=torch.floa
 _device, _dtype, _cfg = torch.device("cpu"), torch.float32, "./cfg.yml"
 spaceTx = SpaceTx(_cfg)
 _src = torch.randn((5, 60, 4), dtype=_dtype, device=_device)
-_month, _day, _msk = (
-    torch.randint(0, 12, size=(5, 60)),
-    torch.randint(0, 31, (5, 60)),
-    torch.randint(0, 2, (5, 60)).bool(),
+srcmsk, tgtmsk = torch.randint(0, 2, (5, 60)).bool(), torch.zeros((5, 60), dtype=_dtype)
+tgtmsk[:, :30] += 1
+
+srcdate, tgtdate = torch.stack(
+    (
+        torch.randint(0, 12, size=(5, 60)),
+        torch.randint(0, 31, (5, 60)),
+    ),
+    2,
+), torch.stack(
+    (
+        torch.randint(0, 12, size=(5, 60)),
+        torch.randint(0, 31, (5, 60)),
+    ),
+    2,
 )
-_date = torch.stack((_month, _day), 2)
-spaceTx(_src, _date, _msk, _date)
+spaceTx(_src, srcdate, srcmsk, tgtdate, tgtmsk)
 print(1)

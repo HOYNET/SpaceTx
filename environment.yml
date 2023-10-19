@@ -1,0 +1,12 @@
+name: SpaceReg
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - pytorch
+  - torchvision
+  - torchaudio
+  - cpuonly

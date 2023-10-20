@@ -1,15 +1,17 @@
 encoder:
-  nlayer: 4
+  nlayer: 8
   d_model: 1
   nhead: 1
-  dim_feedforward : 4
+  dim_feedforward : 64
   dropout: 0.2
 decoder:
   d_model: 1
   srcLength: 60
   tgtLength: 30
   hiddens:
-    - 32
+    - 128
     - 16
+    - 16
+  nlayer: 7
 # weight:
 device: cpu

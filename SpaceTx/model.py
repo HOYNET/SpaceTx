@@ -90,6 +90,7 @@ class Decoder(nn.Module):
             self.srcLength,
             self.tgtLength,
             self.hiddens,
+            self.nlayer,
             self.device,
             self.dtype,
         ) = (
@@ -97,6 +98,7 @@ class Decoder(nn.Module):
             cfg["srcLength"],
             cfg["tgtLength"],
             cfg["hiddens"],
+            cfg["nlayer"],
             device,
             dtype,
         )
@@ -140,13 +142,51 @@ class Decoder(nn.Module):
             nn.Conv1d(self.hiddens[1], self.d_model, 1, 1),
         )
 
+        self.rnn = nn.Sequential(
+            nn.GRU(
+                input_size=self.d_model,
+                hidden_size=self.hiddens[2],
+                num_layers=self.nlayer,
+                batch_first=True,
+            )
+        )
+        self.rnnFusion = nn.Sequential(
+            nn.Linear(
+                self.nlayer,
+                self.tgtLength,
+            ),
+            nn.ReLU(True),
+            nn.Conv1d(self.hiddens[1], self.d_model, 1, 1),
+        )
+
+        self.fusion = nn.Sequential(
+            nn.ReLU(True),
+            nn.Conv1d(self.d_model * 2, self.d_model, 1, 1),
+        )
+
+        self.dense = nn.Sequential(
+            nn.Linear(self.srcLength, self.hiddens[0]),
+            nn.ReLU(True),
+            nn.Linear(self.hiddens[0], self.tgtLength),
+        )
+
     def forward(self, src):
         src = src.transpose(-1, -2)
-        cnv = torch.concat(
-            [self.conv1d0(src), self.conv1d1(src), self.conv1d2(src)],
-            dim=2,
-        )
-        result = self.cnnFusion(cnv).transpose(-1, -2)
+        # cnv, rec = torch.concat(
+        #     [self.conv1d0(src), self.conv1d1(src), self.conv1d2(src)],
+        #     dim=2,
+        # ), self.rnn(src.transpose(-1, -2))[1].transpose(-2, -3).transpose(-2, -1)
+        # result = torch.concat(
+        #     [
+        #         self.cnnFusion(cnv),
+        #         self.rnnFusion(rec),
+        #     ],
+        #     dim=-2,
+        # )
+        # result = self.fusion(result).transpose(-1, -2)
+
+        result = self.dense(src).transpose(-1, -2)
+
         return result
 
 

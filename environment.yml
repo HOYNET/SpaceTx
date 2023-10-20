@@ -1,4 +1,4 @@
-name: SpaceReg
+name: SpaceTx
 channels:
   - pytorch
   - defaults

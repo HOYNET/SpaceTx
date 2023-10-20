@@ -4,7 +4,7 @@ import yaml
 
 
 class DateEncoding(nn.Module):
-    def __init__(self, d_model, device, dtype=torch.float16):
+    def __init__(self, d_model, device, dtype=torch.float32):
         super(DateEncoding, self).__init__()
 
         self.d_model = d_model
@@ -35,31 +35,21 @@ class DateEncoding(nn.Module):
         self.encoding.requires_grad = False
 
     def forward(self, src, dates) -> torch.tensor:
-        encoded = self.encoding[dates[..., 0], dates[..., 1]]
+        encoded = self.encoding[dates[..., 0] - 1, dates[..., 1] - 1]
         return src + encoded
 
 
 class Encoder(nn.Module):
-    def __init__(
-        self,
-        nlayer,
-        d_model,
-        nhead,
-        dim_feedforward,
-        dropout,
-        device: torch.device,
-        dtype=torch.float16,
-    ):
+    def __init__(self, cfg, device=torch.device, dtype=torch.float32):
         super(Encoder, self).__init__()
-
-        self.d_model, self.device, self.dtype = d_model, device, dtype
+        self.d_model, self.device, self.dtype = cfg["d_model"], device, dtype
         self.dateEncoding = DateEncoding(self.d_model, self.device, self.dtype)
 
         self.nlayer, self.nhead, self.dim_feedforward, self.dropout = (
-            nlayer,
-            nhead,
-            dim_feedforward,
-            dropout,
+            cfg["nlayer"],
+            cfg["nhead"],
+            cfg["dim_feedforward"],
+            cfg["dropout"],
         )
         self.encoderLayer = nn.TransformerEncoderLayer(
             self.d_model,
@@ -77,33 +67,32 @@ class Encoder(nn.Module):
         )
 
     def forward(self, src, dates, keyMsk=None):
-        src, srcMsk = self.dateEncoding(src, dates), create_causal_mask(src.shape[1])
+        src, srcMsk = self.dateEncoding(src, dates), self.create_causal_mask(
+            src.shape[1]
+        )
         result = self.txEncoder(src, srcMsk, keyMsk, True)
         assert not torch.isnan(result).any()
         return result
 
+    def create_causal_mask(self, nseq):
+        mask = torch.triu(torch.ones(nseq, nseq, dtype=self.dtype), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(
+            mask == 0, float(0.0)
+        )
+        return mask
+
 
 class Decoder(nn.Module):
-    def __init__(
-        self,
-        nlayer,
-        d_model,
-        nhead,
-        dim_feedforward,
-        dropout,
-        device: torch.device,
-        dtype=torch.float16,
-    ):
+    def __init__(self, cfg, device=torch.device, dtype=torch.float32):
         super(Decoder, self).__init__()
-
-        self.d_model, self.device, self.dtype = d_model, device, dtype
+        self.d_model, self.device, self.dtype = cfg["d_model"], device, dtype
         self.dateEncoding = DateEncoding(self.d_model, self.device, self.dtype)
 
         self.nlayer, self.nhead, self.dim_feedforward, self.dropout = (
-            nlayer,
-            nhead,
-            dim_feedforward,
-            dropout,
+            cfg["nlayer"],
+            cfg["nhead"],
+            cfg["dim_feedforward"],
+            cfg["dropout"],
         )
         self.decoderLayer = nn.TransformerDecoderLayer(
             self.d_model,
@@ -120,7 +109,7 @@ class Decoder(nn.Module):
 
     def forward(self, tgt, src, dates, tgtKeyMsk=None, srcKeyMsk=None):
         tgt = self.dateEncoding(tgt, dates)
-        srcMsk, tgtMsk = create_causal_mask(src.shape[1]), create_causal_mask(
+        srcMsk, tgtMsk = self.create_causal_mask(src.shape[1]), self.create_causal_mask(
             tgt.shape[1]
         )
 
@@ -130,66 +119,42 @@ class Decoder(nn.Module):
         assert not torch.isnan(result).any()
         return result
 
-
-def create_causal_mask(nseq):
-    mask = torch.triu(torch.ones(nseq, nseq), diagonal=1)
-    mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(mask == 0, float(0.0))
-    return mask
+    def create_causal_mask(self, nseq):
+        mask = torch.triu(torch.ones(nseq, nseq, dtype=self.dtype), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(
+            mask == 0, float(0.0)
+        )
+        return mask
 
 
 class SpaceTx(nn.Module):
     def __init__(
         self,
-        pth,
-        encoderCfg=None,
-        decoderCfg=None,
+        pth=None,
+        cfg=None,
         device=torch.device("cpu"),
         dtype=torch.float32,
     ):
         super(SpaceTx, self).__init__()
 
-        self.device, self.dtype = device, dtype
-        self.encoder, self.decoder = Cfg2Encoder(
-            encoderCfg, pth, device, dtype
-        ), Cfg2Decoder(decoderCfg, pth, device, dtype)
+        if pth:
+            with open(pth) as f:
+                cfg = yaml.load(f, Loader=yaml.FullLoader)
+                device = torch.device(cfg["device"])
 
-    def forward(self, src, srcDates, srcMsk, tgtDates, tgtMsk):
+        self.cfg, self.device, self.dtype = cfg, device, dtype
+        self.encoder, self.decoder = Encoder(
+            self.cfg["encoder"], self.device, dtype
+        ), Decoder(self.cfg["decoder"], self.device, dtype)
+
+        if "weight" in self.cfg:
+            self.load_state_dict(
+                torch.load(self.cfg["weight"], map_location=self.device)
+            )
+
+        self.to(self.device)
+
+    def forward(self, src, srcDates, srcMsk, tgt, tgtDates, tgtMsk):
         src = self.encoder(src, srcDates, srcMsk)
-        tgt = torch.zeros_like(src, dtype=self.dtype)
-        tgt[:, 0] += src[:, -1]
         result = self.decoder(tgt, src, tgtDates, tgtMsk, srcMsk)
         return result
-
-
-def Cfg2Encoder(cfg=None, pth=None, device=torch.device("cpu"), dtype=torch.float32):
-    if pth:
-        with open(pth) as f:
-            yml = yaml.load(f, Loader=yaml.FullLoader)
-            cfg = yml["encoder"]
-    return Encoder(
-        cfg["nlayer"],
-        cfg["d_model"],
-        cfg["nhead"],
-        cfg["dim_feedforward"],
-        cfg["dropout"],
-        device,
-        dtype,
-    )
-
-
-def Cfg2Decoder(cfg=None, pth=None, device=torch.device("cpu"), dtype=torch.float32):
-    if pth:
-        with open(pth) as f:
-            yml = yaml.load(f, Loader=yaml.FullLoader)
-            cfg = yml["decoder"]
-    return Decoder(
-        cfg["nlayer"],
-        cfg["d_model"],
-        cfg["nhead"],
-        cfg["dim_feedforward"],
-        cfg["dropout"],
-        device,
-        dtype,
-    )
-
-

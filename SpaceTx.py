@@ -1,7 +1,4 @@
-import torch
-import pandas as pd
-from SpaceTx import SpaceTx, SpaceDataset
+from SpaceTx import SapceTxTrainer
 
-dataset = SpaceDataset("./Data/train.xlsx", 10, 10, False)
-
-print(next(iter(dataset)))
+trainer = SapceTxTrainer("./train0/trainer.yml")
+trainer(500, 2)

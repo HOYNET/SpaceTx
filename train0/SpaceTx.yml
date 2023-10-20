@@ -1,12 +1,14 @@
 encoder:
   nlayer: 4
-  d_model: 4
-  nhead: 4
+  d_model: 1
+  nhead: 1
   dim_feedforward : 4
   dropout: 0.2
 decoder:
   nlayer: 4
-  d_model: 4
-  nhead: 4
+  d_model: 1
+  nhead: 1
   dim_feedforward : 4
   dropout: 0.2
+# weight:
+device: cpu

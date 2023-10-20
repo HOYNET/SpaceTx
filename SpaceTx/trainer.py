@@ -38,13 +38,16 @@ class SapceTxTrainer:
 
     def __call__(self, epochs, save):
         print(
-            f"Start Training : SpaceTx\n  configuration {self.cfg}\n  weights save on {self.ckpt}"
+            f"Start Training : SpaceTx\n  configuration {self.cfg}\n  weights will be saved on {self.ckpt}"
         )
         trainLoss, testLoss = [], []
         for i in range(epochs):
             trainLoss.append(self.train())
             testLoss.append(self.test())
-
+            print(
+                f"    Epoch {i}:\n        Avg Train Loss : {trainLoss[-1]}\n        Avg Test Loss : {testLoss[-1]}"
+            )
+            
             if i % save == 0:
                 path = f"{self.ckpt}/SapceTx_{i}.pth"
                 torch.save(self.model.state_dict(), path)
@@ -69,7 +72,7 @@ class SapceTxTrainer:
             self.optimizer.zero_grad()
             pred = self.model(src, srcDates, None, _tgt, tgtDates, None)
             assert not torch.isnan(pred).any()
-            loss = self.lossFn(pred, tgt)
+            loss = torch.sqrt(self.lossFn(pred, tgt))
             loss.backward()
             self.optimizer.step()
             totalLoss, steps = totalLoss + loss.item(), steps + 1
@@ -81,7 +84,7 @@ class SapceTxTrainer:
         totalLoss, steps = 0.0, 0.0
 
         with torch.no_grad():
-            for idx, batch in enumerate(self.trainLoader):
+            for idx, batch in enumerate(self.testLoader):
                 src, tgt = (
                     self.preproc(batch["src"])
                     .to(self.device)
@@ -94,15 +97,15 @@ class SapceTxTrainer:
                 )
 
                 srcDates, tgtDates = batch["srcDates"].to(self.device).to(
-                    torch.int16
-                ), batch["tgtDates"].to(self.device).to(torch.int16)
+                    torch.int32
+                ), batch["tgtDates"].to(self.device).to(torch.int32)
 
                 _tgt = torch.zeros_like(tgt, device=self.device, dtype=self.dtype)
                 _tgt[:, 0] += src[:, -1]
 
                 pred = self.model(src, srcDates, None, _tgt, tgtDates, None)
                 assert not torch.isnan(pred).any()
-                loss = self.lossFn(pred, tgt)
+                loss = torch.sqrt(self.lossFn(pred, tgt))
                 totalLoss, steps = totalLoss + loss.item(), steps + 1
 
         return totalLoss / steps

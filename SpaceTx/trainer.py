@@ -66,11 +66,8 @@ class SapceTxTrainer:
                 torch.int32
             ), batch["tgtDates"].to(self.device).to(torch.int32)
 
-            _tgt = torch.zeros_like(tgt, device=self.device, dtype=self.dtype)
-            _tgt[:, 0] += src[:, -1]
-
             self.optimizer.zero_grad()
-            pred = self.model(src, srcDates, None, _tgt, tgtDates, None)
+            pred = self.model(src, srcDates, None)
             assert not torch.isnan(pred).any()
             loss = torch.sqrt(self.lossFn(pred, tgt))
             loss.backward()
@@ -100,10 +97,7 @@ class SapceTxTrainer:
                     torch.int32
                 ), batch["tgtDates"].to(self.device).to(torch.int32)
 
-                _tgt = torch.zeros_like(tgt, device=self.device, dtype=self.dtype)
-                _tgt[:, 0] += src[:, -1]
-
-                pred = self.model(src, srcDates, None, _tgt, tgtDates, None)
+                pred = self.model(src, srcDates, None)
                 assert not torch.isnan(pred).any()
                 loss = torch.sqrt(self.lossFn(pred, tgt))
                 totalLoss, steps = totalLoss + loss.item(), steps + 1

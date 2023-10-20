@@ -5,10 +5,11 @@ encoder:
   dim_feedforward : 4
   dropout: 0.2
 decoder:
-  nlayer: 4
   d_model: 1
-  nhead: 1
-  dim_feedforward : 4
-  dropout: 0.2
+  srcLength: 60
+  tgtLength: 30
+  hiddens:
+    - 32
+    - 16
 # weight:
 device: cpu

@@ -85,46 +85,69 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, cfg, device=torch.device, dtype=torch.float32):
         super(Decoder, self).__init__()
-        self.d_model, self.device, self.dtype = cfg["d_model"], device, dtype
-        self.dateEncoding = DateEncoding(self.d_model, self.device, self.dtype)
-
-        self.nlayer, self.nhead, self.dim_feedforward, self.dropout = (
-            cfg["nlayer"],
-            cfg["nhead"],
-            cfg["dim_feedforward"],
-            cfg["dropout"],
-        )
-        self.decoderLayer = nn.TransformerDecoderLayer(
+        (
             self.d_model,
-            self.nhead,
-            self.dim_feedforward,
-            self.dropout,
-            "relu",
-            batch_first=True,
-            device=self.device,
-            dtype=self.dtype,
+            self.srcLength,
+            self.tgtLength,
+            self.hiddens,
+            self.device,
+            self.dtype,
+        ) = (
+            cfg["d_model"],
+            cfg["srcLength"],
+            cfg["tgtLength"],
+            cfg["hiddens"],
+            device,
+            dtype,
         )
 
-        self.txDecoder = nn.TransformerDecoder(self.decoderLayer, self.nlayer)
-
-    def forward(self, tgt, src, dates, tgtKeyMsk=None, srcKeyMsk=None):
-        tgt = self.dateEncoding(tgt, dates)
-        srcMsk, tgtMsk = self.create_causal_mask(src.shape[1]), self.create_causal_mask(
-            tgt.shape[1]
+        self.conv1d0, convLength0 = (
+            nn.Sequential(
+                nn.Conv1d(self.d_model, self.hiddens[0], 1, 1),
+                nn.ReLU(True),
+                nn.Conv1d(self.hiddens[0], self.hiddens[1], 5, 1),
+                nn.AvgPool1d(kernel_size=5, stride=1),
+            ),
+            self.srcLength - 8,
         )
 
-        result = self.txDecoder(
-            tgt, src, tgtMsk, srcMsk, tgtKeyMsk, srcKeyMsk, True, True
+        self.conv1d1, convLength1 = (
+            nn.Sequential(
+                nn.Conv1d(self.d_model, self.hiddens[0], 5, 1),
+                nn.ReLU(True),
+                nn.Conv1d(self.hiddens[0], self.hiddens[1], 10, 1),
+                nn.AvgPool1d(kernel_size=5, stride=1),
+            ),
+            self.srcLength - 17,
         )
-        assert not torch.isnan(result).any()
+
+        self.conv1d2, convLength2 = (
+            nn.Sequential(
+                nn.Conv1d(self.d_model, self.hiddens[0], 10, 1),
+                nn.ReLU(True),
+                nn.Conv1d(self.hiddens[0], self.hiddens[1], 20, 1),
+                nn.AvgPool1d(kernel_size=5, stride=1),
+            ),
+            self.srcLength - 32,
+        )
+
+        self.cnnFusion = nn.Sequential(
+            nn.Linear(
+                convLength0 + convLength1 + convLength2,
+                self.tgtLength,
+            ),
+            nn.ReLU(True),
+            nn.Conv1d(self.hiddens[1], self.d_model, 1, 1),
+        )
+
+    def forward(self, src):
+        src = src.transpose(-1, -2)
+        cnv = torch.concat(
+            [self.conv1d0(src), self.conv1d1(src), self.conv1d2(src)],
+            dim=2,
+        )
+        result = self.cnnFusion(cnv).transpose(-1, -2)
         return result
-
-    def create_causal_mask(self, nseq):
-        mask = torch.triu(torch.ones(nseq, nseq, dtype=self.dtype), diagonal=1)
-        mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(
-            mask == 0, float(0.0)
-        )
-        return mask
 
 
 class SpaceTx(nn.Module):
@@ -154,7 +177,7 @@ class SpaceTx(nn.Module):
 
         self.to(self.device)
 
-    def forward(self, src, srcDates, srcMsk, tgt, tgtDates, tgtMsk):
+    def forward(self, src, srcDates, srcMsk):
         src = self.encoder(src, srcDates, srcMsk)
-        result = self.decoder(tgt, src, tgtDates, tgtMsk, srcMsk)
+        result = self.decoder(src)
         return result

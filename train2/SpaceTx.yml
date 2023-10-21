@@ -1,0 +1,22 @@
+encoder:
+  nlayer: 2
+  d_model: 1
+  nhead: 1
+  dim_feedforward : 32
+  dropout: 0.1
+decoder:
+  d_model: 1
+  nhead: 1
+  dim_feedforward : 16
+  dropout: 0.1
+  srcLength: 60
+  tgtLength: 30
+  hiddens:
+    - 128
+    - 256
+    - 16
+  nlayer: 
+    - 32
+    - 4
+# weight: ./train3/ckpt/SapceTx_10.pth
+device: cpu

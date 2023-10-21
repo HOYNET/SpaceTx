@@ -1,223 +1,127 @@
 import torch
-from torch import nn
+import torch.nn as nn
 import yaml
 
-
-class DateEncoding(nn.Module):
-    def __init__(self, d_model, device, dtype=torch.float32):
-        super(DateEncoding, self).__init__()
-
-        self.d_model = d_model
-        self.device = device
-        self.dtype = dtype
-
-        months = (
-            torch.arange(1, 12 + 1, device=self.device, dtype=self.dtype)
-            .unsqueeze(1)
-            .repeat(1, self.d_model)
-        )
-        days = (
-            torch.arange(1, 31 + 1, device=self.device, dtype=self.dtype)
-            .unsqueeze(1)
-            .repeat(1, self.d_model)
-        )
-        _2i = torch.arange(0, d_model, step=2, device=self.device, dtype=self.dtype)
-
-        months[:, ::2] = torch.sin(months[:, ::2] / (10000 ** (_2i / d_model)))
-        months[:, 1::2] = torch.cos(months[:, 1::2] / (10000 ** (_2i / d_model)))
-        days[:, ::2] = torch.sin(days[:, ::2] / (10000 ** (_2i / d_model)))
-        days[:, 1::2] = torch.cos(days[:, 1::2] / (10000 ** (_2i / d_model)))
-
-        months = torch.tile(months, (31, 1, 1)).transpose(0, 1)
-        days = torch.tile(days, (12, 1, 1))
-
-        self.encoding = months + days
-        self.encoding.requires_grad = False
-
-    def forward(self, src, dates) -> torch.tensor:
-        encoded = self.encoding[dates[..., 0] - 1, dates[..., 1] - 1]
-        return src + encoded
+# https://github.com/CVxTz/time_series_forecasting/blob/main/LICENSE
 
 
-class Encoder(nn.Module):
-    def __init__(self, cfg, device=torch.device, dtype=torch.float32):
-        super(Encoder, self).__init__()
-        self.d_model, self.device, self.dtype = cfg["d_model"], device, dtype
-        self.dateEncoding = DateEncoding(self.d_model, self.device, self.dtype)
+def gen_trg_mask(length, device):
+    mask = torch.tril(torch.ones(length, length, device=device)) == 1
 
-        self.nlayer, self.nhead, self.dim_feedforward, self.dropout = (
-            cfg["nlayer"],
-            cfg["nhead"],
-            cfg["dim_feedforward"],
-            cfg["dropout"],
-        )
-        self.encoderLayer = nn.TransformerEncoderLayer(
-            self.d_model,
-            self.nhead,
-            self.dim_feedforward,
-            self.dropout,
-            "relu",
-            batch_first=True,
-            device=self.device,
-            dtype=self.dtype,
-        )
+    mask = (
+        mask.float()
+        .masked_fill(mask == 0, float("-inf"))
+        .masked_fill(mask == 1, float(0.0))
+    )
 
-        self.txEncoder = nn.TransformerEncoder(
-            self.encoderLayer, self.nlayer, mask_check=True
-        )
-
-    def forward(self, src, dates, keyMsk=None):
-        src, srcMsk = self.dateEncoding(src, dates), self.create_causal_mask(
-            src.shape[1]
-        )
-        result = self.txEncoder(src, srcMsk, keyMsk, True)
-        assert not torch.isnan(result).any()
-        return result
-
-    def create_causal_mask(self, nseq):
-        mask = torch.triu(torch.ones(nseq, nseq, dtype=self.dtype), diagonal=1)
-        mask = mask.masked_fill(mask == 1, float("-1e9")).masked_fill(
-            mask == 0, float(0.0)
-        )
-        return mask
-
-
-class Decoder(nn.Module):
-    def __init__(self, cfg, device=torch.device, dtype=torch.float32):
-        super(Decoder, self).__init__()
-        (
-            self.d_model,
-            self.srcLength,
-            self.tgtLength,
-            self.hiddens,
-            self.nlayer,
-            self.device,
-            self.dtype,
-        ) = (
-            cfg["d_model"],
-            cfg["srcLength"],
-            cfg["tgtLength"],
-            cfg["hiddens"],
-            cfg["nlayer"],
-            device,
-            dtype,
-        )
-
-        self.conv1d0, convLength0 = (
-            nn.Sequential(
-                nn.Conv1d(self.d_model, self.hiddens[0], 1, 1),
-                nn.ReLU(True),
-                nn.Conv1d(self.hiddens[0], self.hiddens[1], 5, 1),
-                nn.AvgPool1d(kernel_size=5, stride=1),
-            ),
-            self.srcLength - 8,
-        )
-
-        self.conv1d1, convLength1 = (
-            nn.Sequential(
-                nn.Conv1d(self.d_model, self.hiddens[0], 5, 1),
-                nn.ReLU(True),
-                nn.Conv1d(self.hiddens[0], self.hiddens[1], 10, 1),
-                nn.AvgPool1d(kernel_size=5, stride=1),
-            ),
-            self.srcLength - 17,
-        )
-
-        self.conv1d2, convLength2 = (
-            nn.Sequential(
-                nn.Conv1d(self.d_model, self.hiddens[0], 10, 1),
-                nn.ReLU(True),
-                nn.Conv1d(self.hiddens[0], self.hiddens[1], 20, 1),
-                nn.AvgPool1d(kernel_size=5, stride=1),
-            ),
-            self.srcLength - 32,
-        )
-
-        self.cnnFusion = nn.Sequential(
-            nn.Linear(
-                convLength0 + convLength1 + convLength2,
-                self.tgtLength,
-            ),
-            nn.ReLU(True),
-            nn.Conv1d(self.hiddens[1], self.d_model, 1, 1),
-        )
-
-        self.rnn = nn.Sequential(
-            nn.GRU(
-                input_size=self.d_model,
-                hidden_size=self.hiddens[2],
-                num_layers=self.nlayer,
-                batch_first=True,
-            )
-        )
-        self.rnnFusion = nn.Sequential(
-            nn.Linear(
-                self.nlayer,
-                self.tgtLength,
-            ),
-            nn.ReLU(True),
-            nn.Conv1d(self.hiddens[1], self.d_model, 1, 1),
-        )
-
-        self.fusion = nn.Sequential(
-            nn.ReLU(True),
-            nn.Conv1d(self.d_model * 2, self.d_model, 1, 1),
-        )
-
-        self.dense = nn.Sequential(
-            nn.Linear(self.srcLength, self.hiddens[0]),
-            nn.ReLU(True),
-            nn.Linear(self.hiddens[0], self.tgtLength),
-        )
-
-    def forward(self, src):
-        src = src.transpose(-1, -2)
-        # cnv, rec = torch.concat(
-        #     [self.conv1d0(src), self.conv1d1(src), self.conv1d2(src)],
-        #     dim=2,
-        # ), self.rnn(src.transpose(-1, -2))[1].transpose(-2, -3).transpose(-2, -1)
-        # result = torch.concat(
-        #     [
-        #         self.cnnFusion(cnv),
-        #         self.rnnFusion(rec),
-        #     ],
-        #     dim=-2,
-        # )
-        # result = self.fusion(result).transpose(-1, -2)
-
-        result = self.dense(src).transpose(-1, -2)
-
-        return result
+    return mask
 
 
 class SpaceTx(nn.Module):
-    def __init__(
-        self,
-        pth=None,
-        cfg=None,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-    ):
-        super(SpaceTx, self).__init__()
+    def __init__(self, pth=None, cfg=None):
+        super().__init__()
 
         if pth:
             with open(pth) as f:
                 cfg = yaml.load(f, Loader=yaml.FullLoader)
-                device = torch.device(cfg["device"])
 
-        self.cfg, self.device, self.dtype = cfg, device, dtype
-        self.encoder, self.decoder = Encoder(
-            self.cfg["encoder"], self.device, dtype
-        ), Decoder(self.cfg["decoder"], self.device, dtype)
+        self.ninput, self.dropout, self.nchannel, self.device = (
+            cfg["ninput"],
+            cfg["dropout"],
+            cfg["nchannel"],
+            torch.device(cfg["device"]),
+        )
 
-        if "weight" in self.cfg:
-            self.load_state_dict(
-                torch.load(self.cfg["weight"], map_location=self.device)
-            )
+        self.input_pos_embedding = torch.nn.Embedding(1024, embedding_dim=self.nchannel)
+        self.target_pos_embedding = torch.nn.Embedding(
+            1024, embedding_dim=self.nchannel
+        )
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.nchannel,
+            nhead=8,
+            dropout=self.dropout,
+            dim_feedforward=4 * self.nchannel,
+        )
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=self.nchannel,
+            nhead=8,
+            dropout=self.dropout,
+            dim_feedforward=4 * self.nchannel,
+        )
+
+        self.encoder = torch.nn.TransformerEncoder(encoder_layer, num_layers=8)
+        self.decoder = torch.nn.TransformerDecoder(decoder_layer, num_layers=8)
+
+        self.input_projection = nn.Linear(self.ninput[0], self.nchannel)
+        self.output_projection = nn.Linear(self.ninput[1], self.nchannel)
+
+        self.linear = nn.Linear(self.nchannel, 1)
+
+        self.do = nn.Dropout(p=self.dropout)
 
         self.to(self.device)
 
-    def forward(self, src, srcDates, srcMsk):
-        src = self.encoder(src, srcDates, srcMsk)
-        result = self.decoder(src)
-        return result
+    def encode_src(self, src):
+        src_start = self.input_projection(src).permute(1, 0, 2)
+
+        in_sequence_len, batch_size = src_start.size(0), src_start.size(1)
+        pos_encoder = (
+            torch.arange(0, in_sequence_len, device=src.device)
+            .unsqueeze(0)
+            .repeat(batch_size, 1)
+        )
+
+        pos_encoder = self.input_pos_embedding(pos_encoder).permute(1, 0, 2)
+
+        src = src_start + pos_encoder
+
+        src = self.encoder(src) + src_start
+
+        return src
+
+    def decode_trg(self, trg, memory):
+        trg_start = self.output_projection(trg).permute(1, 0, 2)
+
+        out_sequence_len, batch_size = trg_start.size(0), trg_start.size(1)
+
+        pos_decoder = (
+            torch.arange(0, out_sequence_len, device=trg.device)
+            .unsqueeze(0)
+            .repeat(batch_size, 1)
+        )
+        pos_decoder = self.target_pos_embedding(pos_decoder).permute(1, 0, 2)
+
+        trg = pos_decoder + trg_start
+
+        trg_mask = gen_trg_mask(out_sequence_len, trg.device)
+
+        out = self.decoder(tgt=trg, memory=memory, tgt_mask=trg_mask) + trg_start
+
+        out = out.permute(1, 0, 2)
+
+        out = self.linear(out)
+
+        return out
+
+    def forward(self, src, tgt):
+        src = self.encode_src(src)
+
+        out = self.decode_trg(trg=tgt, memory=src)
+
+        return out
+
+
+if __name__ == "__main__":
+    n_classes = 100
+
+    source = torch.rand(size=(32, 16, 1))
+    target_in = torch.rand(size=(32, 16, 1))
+    target_out = torch.rand(size=(32, 16, 1))
+
+    ts = SpaceTx("./train3/SpaceTx.yml")
+
+    pred = ts(source, target_in)
+
+    print(pred.size())
+

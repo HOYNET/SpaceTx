@@ -1,4 +1,4 @@
 from SpaceTx import SapceTxTrainer
 
-trainer = SapceTxTrainer("./train0/trainer.yml")
-trainer(500, 2)
+trainer = SapceTxTrainer(0.01, "./train3/trainer.yml")
+trainer(5000, 1)

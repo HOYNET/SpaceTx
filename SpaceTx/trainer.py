@@ -4,17 +4,23 @@ from .parse import SpaceDataset
 from .model import SpaceTx
 from torch.utils.data import DataLoader, random_split
 import yaml
+from lion_pytorch import Lion
 
 
 class SapceTxTrainer:
-    def __init__(self, pth=None, cfg=None, dtype=torch.float32):
+    def __init__(self, lr, pth=None, cfg=None, dtype=torch.float32):
         if pth:
             with open(pth) as f:
                 cfg = yaml.load(f, Loader=yaml.FullLoader)
 
-        self.cfg, self.dtype, self.device = cfg, dtype, torch.device(cfg["device"])
+        self.lr, self.cfg, self.dtype, self.device = (
+            lr,
+            cfg,
+            dtype,
+            torch.device(cfg["device"]),
+        )
 
-        self.model = SpaceTx(self.cfg["model"], self.device, dtype=self.dtype)
+        self.model = SpaceTx(self.cfg["model"])
 
         data = self.cfg["data"]
         dataset = SpaceDataset(
@@ -30,16 +36,23 @@ class SapceTxTrainer:
             shuffle=True,
         ), DataLoader(testDataset, batch_size=data["batches"], shuffle=True)
 
-        self.lossFn, self.optimizer, self.ckpt = (
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer=self.optimizer, lr_lambda=lambda epoch: 0.95**epoch
+        )
+
+        self.lossFn, self.ckpt = (
             nn.MSELoss(),
-            torch.optim.Adam(self.model.parameters(), lr=cfg["lr"]),
             cfg["ckpt"],
         )
+
+        self.ckptEpochs = 0
 
     def __call__(self, epochs, save):
         print(
             f"Start Training : SpaceTx\n  configuration {self.cfg}\n  weights will be saved on {self.ckpt}"
         )
+
         trainLoss, testLoss = [], []
         for i in range(epochs):
             trainLoss.append(self.train())
@@ -47,9 +60,11 @@ class SapceTxTrainer:
             print(
                 f"    Epoch {i}:\n        Avg Train Loss : {trainLoss[-1]}\n        Avg Test Loss : {testLoss[-1]}"
             )
-            
-            if i % save == 0:
-                path = f"{self.ckpt}/SapceTx_{i}.pth"
+            self.scheduler.step(i)
+
+            self.ckptEpochs += 1
+            if self.ckptEpochs % save == 0:
+                path = f"{self.ckpt}/SapceTx_{self.ckptEpochs}.pth"
                 torch.save(self.model.state_dict(), path)
 
     def train(self):
@@ -62,12 +77,10 @@ class SapceTxTrainer:
                 self.preproc(batch["tgt"]).to(self.device).to(self.dtype).unsqueeze(-1),
             )
 
-            srcDates, tgtDates = batch["srcDates"].to(self.device).to(
-                torch.int32
-            ), batch["tgtDates"].to(self.device).to(torch.int32)
-
             self.optimizer.zero_grad()
-            pred = self.model(src, srcDates, None)
+            _tgt = torch.zeros_like(tgt, dtype=tgt.dtype, device=tgt.device)
+            _tgt[:, 0] += src[:, -1]
+            pred = self.model(src, _tgt)
             assert not torch.isnan(pred).any()
             loss = torch.sqrt(self.lossFn(pred, tgt))
             loss.backward()
@@ -93,11 +106,10 @@ class SapceTxTrainer:
                     .unsqueeze(-1),
                 )
 
-                srcDates, tgtDates = batch["srcDates"].to(self.device).to(
-                    torch.int32
-                ), batch["tgtDates"].to(self.device).to(torch.int32)
+                _tgt = torch.zeros_like(tgt, dtype=tgt.dtype, device=tgt.device)
+                _tgt[:, 0] += src[:, -1]
 
-                pred = self.model(src, srcDates, None)
+                pred = self.model(src, _tgt)
                 assert not torch.isnan(pred).any()
                 loss = torch.sqrt(self.lossFn(pred, tgt))
                 totalLoss, steps = totalLoss + loss.item(), steps + 1

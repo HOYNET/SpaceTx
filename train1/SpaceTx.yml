@@ -13,5 +13,5 @@ decoder:
     - 16
     - 16
   nlayer: 7
-# weight: ./train0/ckpt/SapceTx_46.pth
+weight: ./train1/ckpt/SapceTx_11.pth
 device: cpu

@@ -1,0 +1,11 @@
+model: ./train4/SpaceTx.yml
+data: 
+  pth: ./Data/outlier_mv_mean.csv
+  srcLength: 60
+  tgtLength: 30
+  isAE: False
+  eval: 0.2
+  batches: 5
+lr : 0.00001
+ckpt: ./train4/ckpt
+device: cpu

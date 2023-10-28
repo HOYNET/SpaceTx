@@ -4,4 +4,4 @@ ninput:
 dropout: 0.1
 nchannel: 64
 device: cpu
-weight: ./train3/ckpt/SapceTx_45.pth
+weight: ./train4/ckpt/SapceTx_13.pth

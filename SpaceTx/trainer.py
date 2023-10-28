@@ -73,16 +73,19 @@ class SapceTxTrainer:
 
         for idx, batch in enumerate(self.trainLoader):
             src, tgt = (
-                self.preproc(batch["src"]).to(self.device).to(self.dtype).unsqueeze(-1),
-                self.preproc(batch["tgt"]).to(self.device).to(self.dtype).unsqueeze(-1),
+                batch["src"].to(self.device).to(self.dtype).unsqueeze(-1),
+                batch["tgt"].to(self.device).to(self.dtype).unsqueeze(-1),
             )
+
+            srcMsk, tgtMsk = torch.isnan(src).squeeze(-1), torch.isnan(tgt).squeeze(-1)
+            src[srcMsk] = 0
 
             self.optimizer.zero_grad()
             _tgt = torch.zeros_like(tgt, dtype=tgt.dtype, device=tgt.device)
             _tgt[:, 0] += src[:, -1]
-            pred = self.model(src, _tgt)
-            assert not torch.isnan(pred).any()
-            loss = torch.sqrt(self.lossFn(pred, tgt))
+            pred = self.model(src, srcMsk, _tgt, tgtMsk)
+            assert not torch.isnan(pred[~tgtMsk]).any()
+            loss = torch.sqrt(self.lossFn(pred[~tgtMsk], tgt[~tgtMsk]))
             loss.backward()
             self.optimizer.step()
             totalLoss, steps = totalLoss + loss.item(), steps + 1
@@ -96,22 +99,20 @@ class SapceTxTrainer:
         with torch.no_grad():
             for idx, batch in enumerate(self.testLoader):
                 src, tgt = (
-                    self.preproc(batch["src"])
-                    .to(self.device)
-                    .to(self.dtype)
-                    .unsqueeze(-1),
-                    self.preproc(batch["tgt"])
-                    .to(self.device)
-                    .to(self.dtype)
-                    .unsqueeze(-1),
+                    batch["src"].to(self.device).to(self.dtype).unsqueeze(-1),
+                    batch["tgt"].to(self.device).to(self.dtype).unsqueeze(-1),
                 )
+
+                srcMsk, tgtMsk = torch.isnan(src).squeeze(-1), torch.isnan(tgt).squeeze(
+                    -1
+                )
+                src[srcMsk] = 0
 
                 _tgt = torch.zeros_like(tgt, dtype=tgt.dtype, device=tgt.device)
                 _tgt[:, 0] += src[:, -1]
-
-                pred = self.model(src, _tgt)
-                assert not torch.isnan(pred).any()
-                loss = torch.sqrt(self.lossFn(pred, tgt))
+                pred = self.model(src, srcMsk, _tgt, tgtMsk)
+                assert not torch.isnan(pred[~tgtMsk]).any()
+                loss = torch.sqrt(self.lossFn(pred[~tgtMsk], tgt[~tgtMsk]))
                 totalLoss, steps = totalLoss + loss.item(), steps + 1
 
         return totalLoss / steps

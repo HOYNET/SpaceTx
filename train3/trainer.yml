@@ -1,11 +1,11 @@
 model: ./train3/SpaceTx.yml
 data: 
-  pth: ./Data/train.xlsx
+  pth: ./Data/.csv
   srcLength: 60
   tgtLength: 30
   isAE: False
   eval: 0.2
-  batches: 50
+  batches: 500
 lr : 0.00001
 ckpt: ./train3/ckpt
 device: cpu

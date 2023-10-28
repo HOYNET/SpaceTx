@@ -39,19 +39,19 @@ class SpaceTx(nn.Module):
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.nchannel,
-            nhead=8,
+            nhead=16,
             dropout=self.dropout,
             dim_feedforward=4 * self.nchannel,
         )
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.nchannel,
-            nhead=8,
+            nhead=16,
             dropout=self.dropout,
             dim_feedforward=4 * self.nchannel,
         )
 
-        self.encoder = torch.nn.TransformerEncoder(encoder_layer, num_layers=8)
-        self.decoder = torch.nn.TransformerDecoder(decoder_layer, num_layers=8)
+        self.encoder = torch.nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self.decoder = torch.nn.TransformerDecoder(decoder_layer, num_layers=2)
 
         self.input_projection = nn.Linear(self.ninput[0], self.nchannel)
         self.output_projection = nn.Linear(self.ninput[1], self.nchannel)
@@ -60,9 +60,13 @@ class SpaceTx(nn.Module):
 
         self.do = nn.Dropout(p=self.dropout)
 
+        if "weight" in cfg:
+            self.load_state_dict(torch.load(cfg["weight"], map_location=self.device))
+            print("load weight")
+
         self.to(self.device)
 
-    def encode_src(self, src):
+    def encode_src(self, src, srcMsk):
         src_start = self.input_projection(src).permute(1, 0, 2)
 
         in_sequence_len, batch_size = src_start.size(0), src_start.size(1)
@@ -76,11 +80,11 @@ class SpaceTx(nn.Module):
 
         src = src_start + pos_encoder
 
-        src = self.encoder(src) + src_start
+        src = self.encoder(src, src_key_padding_mask=srcMsk) + src_start
 
         return src
 
-    def decode_trg(self, trg, memory):
+    def decode_trg(self, trg, tgtMsk, memory, memMsk):
         trg_start = self.output_projection(trg).permute(1, 0, 2)
 
         out_sequence_len, batch_size = trg_start.size(0), trg_start.size(1)
@@ -96,7 +100,15 @@ class SpaceTx(nn.Module):
 
         trg_mask = gen_trg_mask(out_sequence_len, trg.device)
 
-        out = self.decoder(tgt=trg, memory=memory, tgt_mask=trg_mask) + trg_start
+        out = (
+            self.decoder(
+                tgt=trg,
+                memory=memory,
+                memory_key_padding_mask=memMsk,
+                tgt_mask=trg_mask,
+            )
+            + trg_start
+        )
 
         out = out.permute(1, 0, 2)
 
@@ -104,10 +116,10 @@ class SpaceTx(nn.Module):
 
         return out
 
-    def forward(self, src, tgt):
-        src = self.encode_src(src)
-
-        out = self.decode_trg(trg=tgt, memory=src)
+    def forward(self, src, srcMsk, tgt, tgtMsk):
+        srcMsk, tgtMsk = srcMsk, tgtMsk
+        src = self.encode_src(src, srcMsk)
+        out = self.decode_trg(trg=tgt, tgtMsk=tgtMsk, memory=src, memMsk=srcMsk)
 
         return out
 
@@ -124,4 +136,3 @@ if __name__ == "__main__":
     pred = ts(source, target_in)
 
     print(pred.size())
-
